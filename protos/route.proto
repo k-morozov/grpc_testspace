@@ -1,18 +1,11 @@
 syntax = "proto3";
 
-package Route;
+package App;
 
-service RouteGuide {
-	rpc GetFeature(Point) returns (Feature) {}
+service AppChat {
+	rpc Chat(Msg) returns (Msg) {}
 }
 
-
-message Point {
-  	int32 x = 1;
-  	int32 y = 2;
-}
-
-message Feature {
-  	string name = 1;
-  	Point loacation = 2;
+message Msg {
+	string text = 1;
 }
