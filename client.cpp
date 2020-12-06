@@ -6,69 +6,141 @@
 #include <grpcpp/grpcpp.h>
 #include "route.grpc.pb.h"
 
-class ChatClient {
+using grpc::Channel;
+using grpc::ClientAsyncResponseReader;
+using grpc::ClientContext;
+using grpc::ClientAsyncReader;
+using grpc::ClientAsyncWriter;
+using grpc::ClientAsyncReaderWriter;
+using grpc::CompletionQueue;
+using grpc::Status;
+using helloworld::HelloRequest;
+using helloworld::HelloReply;
+using helloworld::Greeter;
+
+
+class AbstractAsyncClientCall
+{
 public:
-    ChatClient(std::shared_ptr<grpc::Channel> channel)
-        : stub_(App::AppChat::NewStub(channel)) {}
+	enum CallStatus { PROCESS, FINISH, DESTROY };
 
+	explicit AbstractAsyncClientCall():callStatus(PROCESS){}
+	virtual ~AbstractAsyncClientCall(){}
+	HelloReply reply;
+	ClientContext context;
+	Status status;
+	CallStatus callStatus ;
+	void printReply(const char* from)
+	{
+		if(!reply.message().empty())
+			std::cout << "[" << from << "]: reply message = " << reply.message() << std::endl;
+		else
+			std::cout << "[" << from << "]: reply message empty" << std::endl;
 
-    void SendMsg(const std::string& text) {
-        ::App::Msg request;
-        request.set_text(text);
-
-        AsyncClientCall* call = new AsyncClientCall;
-
-        call->response_reader = stub_->PrepareAsyncChat(&call->context, request, &cq_);
-            
-
-        call->response_reader->StartCall();
-        call->response_reader->Finish(&call->reply, &call->status, (void*)call);
-      }
-
-    void AsyncCompleteRpc() {
-        void* got_tag;
-        bool ok = false;
-
-        while (cq_.Next(&got_tag, &ok)) {
-            AsyncClientCall* call = static_cast<AsyncClientCall*>(got_tag);
-
-            GPR_ASSERT(ok);
-
-            if (call->status.ok())
-                std::cout << "Server reply: " << call->reply.text() << std::endl;
-            else
-                std::cout << "RPC failed" << std::endl;
-
-            delete call;
-        }
-    }
-
-private:
-    std::unique_ptr<App::AppChat::Stub> stub_;
-    grpc::CompletionQueue cq_;
-
-    struct AsyncClientCall {
-        ::App::Msg reply;
-        ::grpc::ClientContext context;
-        ::grpc::Status status;
-
-        std::unique_ptr<::grpc::ClientAsyncResponseReader<::App::Msg>> response_reader;
-    };
-
+	}
+	virtual void Proceed(bool = true) = 0;
 };
 
-int main(int, char**) {
-    ChatClient client(grpc::CreateChannel(
-        "127.0.0.1:7777", grpc::InsecureChannelCredentials()));
-    std::thread thread_ = std::thread(&ChatClient::AsyncCompleteRpc, &client);
-    
-    std::string text;
-    for(int i=0; i<10; ++i) {
-        std::cin >> text;
-        client.SendMsg(text);
-    }
-    
+class AsyncClientCallMM : public AbstractAsyncClientCall
+{
+	std::unique_ptr< ClientAsyncReaderWriter<HelloRequest,HelloReply> > responder;
+	unsigned mcounter;
+	bool writing_mode_;
+public:
+	AsyncClientCallMM(CompletionQueue& cq_, std::unique_ptr<Greeter::Stub>& stub_):
+	AbstractAsyncClientCall(), mcounter(0), writing_mode_(true)
+	{
+		std::cout << "[ProceedMM]: new client M-M" << std::endl;
+    	responder = stub_->AsyncBothGladToSee(&context, &cq_, (void*)this);
+		callStatus = PROCESS ;
+	}
+	virtual void Proceed(bool ok = true) override
+	{
+		if(callStatus == PROCESS)
+		{
 
-    thread_.join();
-    return 0;
+			if(writing_mode_)
+			{
+				static std::vector<std::string> greeting = {"Hello, server!",
+    	                                    	"Glad to see you!",
+        	                                	"Haven't seen you for thousand years!",
+            	                            	"I'm client now. Call me later."};
+				//std::cout << "[ProceedMM]: mcounter = " << mcounter << std::endl;
+    			if(mcounter < greeting.size())
+    			{
+        			HelloRequest request;
+        			request.set_name(greeting.at(mcounter));
+           			responder->Write(request, (void*)this);
+        			++mcounter;
+    			}
+    			else
+    			{
+            		responder->WritesDone((void*)this);
+					std::cout << "[ProceedMM]: changing state to reading" << std::endl;
+        			writing_mode_ = false;
+    			}
+				return ;
+			}
+			else //reading mode
+			{
+				if(!ok)
+				{
+					std::cout << "[ProceedMM]: trying finish" << std::endl;
+					callStatus = FINISH;
+					responder->Finish(&status, (void*)this);
+					return;
+				}
+				responder->Read(&reply, (void*)this);
+				printReply("ProceedMM");
+			}
+		    return;
+		}
+		else if(callStatus == FINISH)
+		{
+			std::cout << "[ProceedMM]: Good Bye" << std::endl;
+			delete this;
+		}
+
+	}
+};
+
+class GreeterClient
+{
+public:
+    explicit GreeterClient(std::shared_ptr<Channel> channel)
+            :stub_(Greeter::NewStub(channel))
+	{}
+
+	void BothGladToSee()
+	{
+    	new AsyncClientCallMM(cq_, stub_);
+	}
+
+	void AsyncCompleteRpc()
+	{
+		void* got_tag;
+    	bool ok = false;
+		while(cq_.Next(&got_tag, &ok))
+		{
+        	AbstractAsyncClientCall* call = static_cast<AbstractAsyncClientCall*>(got_tag);
+			call->Proceed(ok);
+    	}
+		std::cout << "Completion queue is shutting down." << std::endl;
+	}
+
+private:
+    std::unique_ptr<Greeter::Stub> stub_;
+
+    CompletionQueue cq_;
+};
+
+
+int main(int argc, char* argv[])
+{
+	GreeterClient greeter(grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()));
+	std::thread thread_ = std::thread(&GreeterClient::AsyncCompleteRpc, &greeter);
+    
+	greeter.BothGladToSee();
+	thread_.join();
+
 }
