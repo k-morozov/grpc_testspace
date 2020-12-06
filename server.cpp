@@ -41,9 +41,10 @@ private:
             if (status_ == CREATE) {
                 status_ = PROCESS;
                 service_->RequestChat(&ctx_, &request_, &responder_, cq_, cq_, this);
-            } else if (status_==PROCESS) {
+            } else if (status_ == PROCESS) {
+                std::cout << request_.text() << std::endl;
                 new CallData(service_, cq_);
-                response_.set_text("done");
+                response_.set_text("test msg #1 from server");
                 status_ = FINISH;
                 responder_.Finish(response_, grpc::Status::OK, this);
             } else {
@@ -67,13 +68,13 @@ private:
     };
 
     void HandleRPCs() {
-        std::cout << "new connection" << std::endl;
         new CallData(&service_, cq_.get());
         void *tag;
         bool ok;
         while(true) {
             GPR_ASSERT(cq_->Next(&tag, &ok));
             GPR_ASSERT(ok);
+
             static_cast<CallData*>(tag)->Proceed();
         }
     }

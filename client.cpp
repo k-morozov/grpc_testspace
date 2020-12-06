@@ -1,6 +1,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
 
 #include <grpcpp/grpcpp.h>
 #include "route.grpc.pb.h"
@@ -11,42 +12,63 @@ public:
         : stub_(App::AppChat::NewStub(channel)) {}
 
 
-    std::string SayHello(const std::string& text) {
+    void SendMsg(const std::string& text) {
         ::App::Msg request;
         request.set_text(text);
 
-        ::App::Msg reply;
-        grpc::ClientContext context;
-        grpc::CompletionQueue cq;
-        grpc::Status status;
+        AsyncClientCall* call = new AsyncClientCall;
 
-        std::unique_ptr<grpc::ClientAsyncResponseReader<::App::Msg> > rpc(
-            stub_->PrepareAsyncChat(&context, request, &cq));
+        call->response_reader = stub_->PrepareAsyncChat(&call->context, request, &cq_);
+            
 
-        rpc->StartCall();
+        call->response_reader->StartCall();
+        call->response_reader->Finish(&call->reply, &call->status, (void*)call);
+      }
 
-        rpc->Finish(&reply, &status, (void*)1);
+    void AsyncCompleteRpc() {
         void* got_tag;
         bool ok = false;
 
-        GPR_ASSERT(cq.Next(&got_tag, &ok));
-        GPR_ASSERT(got_tag == (void*)1);
-        GPR_ASSERT(ok);
+        while (cq_.Next(&got_tag, &ok)) {
+            AsyncClientCall* call = static_cast<AsyncClientCall*>(got_tag);
 
-        if (status.ok()) {
-          return reply.text();
-        } else {
-          return "RPC failed";
+            GPR_ASSERT(ok);
+
+            if (call->status.ok())
+                std::cout << "Server reply: " << call->reply.text() << std::endl;
+            else
+                std::cout << "RPC failed" << std::endl;
+
+            delete call;
         }
-      }
+    }
+
 private:
     std::unique_ptr<App::AppChat::Stub> stub_;
+    grpc::CompletionQueue cq_;
+
+    struct AsyncClientCall {
+        ::App::Msg reply;
+        ::grpc::ClientContext context;
+        ::grpc::Status status;
+
+        std::unique_ptr<::grpc::ClientAsyncResponseReader<::App::Msg>> response_reader;
+    };
+
 };
 
 int main(int, char**) {
     ChatClient client(grpc::CreateChannel(
         "127.0.0.1:7777", grpc::InsecureChannelCredentials()));
-    std::string reply = client.SayHello("test msg #1");
-    std::cout << "Greeter received: " << reply << std::endl;
+    std::thread thread_ = std::thread(&ChatClient::AsyncCompleteRpc, &client);
+    
+    std::string text;
+    for(int i=0; i<10; ++i) {
+        std::cin >> text;
+        client.SendMsg(text);
+    }
+    
+
+    thread_.join();
     return 0;
 }
