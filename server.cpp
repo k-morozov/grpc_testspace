@@ -44,7 +44,7 @@ private:
             } else if (status_ == PROCESS) {
                 std::cout << request_.text() << std::endl;
                 new CallData(service_, cq_);
-                response_.set_text("test msg #1 from server");
+                response_.set_text("done [" + request_.text() + "]");
                 status_ = FINISH;
                 responder_.Finish(response_, grpc::Status::OK, this);
             } else {
